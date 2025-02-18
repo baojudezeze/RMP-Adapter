@@ -971,40 +971,64 @@ class RegionBasedDenoisingPipeline(StableDiffusionPipeline):
                     cross_attention_kwargs=None,
                     return_dict=False,
                 )[0]
-
+                
                 if pixel_embeds and i >= pixel_embeds_injt_num:
+                    # Initialize variables
                     added_pixel_prompt = 0
+                    
+                    # Generate region mask
                     region_mask = self.generate_roi_mask(
-                        rois, noise_pred.shape[2], noise_pred.shape[3])
-                    tmp_noise = torch.concat(
-                        [noise_pred[0:1], noise_pred[2:3]], dim=0)
+                        rois,
+                        noise_pred.shape[2],
+                        noise_pred.shape[3]
+                    )
+                    
+                    # Create temporary noise prediction
+                    tmp_noise = torch.concat([
+                        noise_pred[0:1],
+                        noise_pred[2:3]
+                    ], dim=0)
+                    
+                    # Initialize ROI noise prediction
                     roi_noise_pred = torch.zeros_like(tmp_noise)
-                    roi_noise_pred[:, :, region_mask ==
-                                   0] = tmp_noise[:, :, region_mask == 0]
-
+                    roi_noise_pred[:, :, region_mask == 0] = tmp_noise[:, :, region_mask == 0]
+                
+                    # Process each ROI
                     for roi in rois:
-                        latent_roi = F.interpolate(roi.unsqueeze(0).unsqueeze(0),
-                                                   size=(
-                                                       noise_pred.shape[2], noise_pred.shape[3]),
-                                                   mode='nearest').squeeze()
-                        region_latent_model_input = torch.cat(
-                            [latent_model_input[2:3].clone()] * 2)
-
+                        # Interpolate ROI to match noise prediction size
+                        latent_roi = F.interpolate(
+                            input=roi.unsqueeze(0).unsqueeze(0),
+                            size=(noise_pred.shape[2], noise_pred.shape[3]),
+                            mode='nearest'
+                        ).squeeze()
+                        
+                        # Prepare model input
+                        region_latent_model_input = torch.cat([
+                            latent_model_input[2:3].clone() for _ in range(2)
+                        ])
+                
+                        # Generate region noise prediction
                         region_noise_pred = self.unet(
                             region_latent_model_input,
                             t,
                             encoder_hidden_states=prompt_embeds,
                             cross_attention_kwargs={
-                                'pixel_embeds': region_pixel_embeds, 'added_pixel_prompt': added_pixel_prompt},
-                            return_dict=False,
+                                'pixel_embeds': region_pixel_embeds,
+                                'added_pixel_prompt': added_pixel_prompt
+                            },
+                            return_dict=False
                         )[0]
-
-                        roi_noise_pred[:, :, latent_roi == 1] += (region_noise_pred[:, :, latent_roi == 1] / (
-                            latent_roi.reshape(1, 1, *latent_roi.shape)[:, :, latent_roi == 1]))
+                
+                        # Update ROI noise prediction
+                        roi_mask = latent_roi == 1
+                        roi_noise_pred[:, :, roi_mask] += (
+                            region_noise_pred[:, :, roi_mask] /
+                            latent_roi.reshape(1, 1, *latent_roi.shape)[:, :, roi_mask])
                         added_pixel_prompt += 1
-
-                    noise_pred[0, :, :, :] = roi_noise_pred[0]
-                    noise_pred[2, :, :, :] = roi_noise_pred[1]
+                
+                    # Update final noise prediction
+                    noise_pred[0] = roi_noise_pred[0]
+                    noise_pred[2] = roi_noise_pred[1]
 
                 # perform guidance
                 if self.do_classifier_free_guidance:
